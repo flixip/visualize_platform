@@ -5,22 +5,18 @@
 <script setup lang="ts">
 import L from 'leaflet'
 import 'leaflet/dist/leaflet.css'
-import { onMounted, ref, watch, computed } from 'vue'
+import { onMounted, ref, watch, computed, inject } from 'vue'
 import 'leaflet.chinatmsproviders'
-
-
+import { getGeojsonLayer, getIndexColor,getHTMLMarker,getGaoDeMapLayer } from '@/hooks/mapTools'
+import { ndviData } from '@/data/ndvidata'
+import { boundsDict } from '@/data/boundsdict'
 
 const emit = defineEmits(['selectDistrict'])
+const yearIndex = inject('yearIndex', ref<number>(0))
 
 // 🔥 1. 扩展Props，加入mapConfig（定义完整类型）
 const props = defineProps<{
-  ndvidata: Array<{
-    district: string;
-    data: number[];
-  }>;
   resetTrigger: boolean;
-  yearindex: number;
-  boundsDict: Record<string, [number[], number[]]>; // 区县边界字典
   mapConfig: {
     startRGB: string; // 起始颜色（rgb字符串）
     endRGB: string;   // 结束颜色（rgb字符串）
@@ -33,20 +29,6 @@ const props = defineProps<{
   };
 }>();
 
-// 🔥 2. 解析RGB字符串为数值（比如 "rgb(230,255,237)" → {r:230,g:255,b:237}）
-const parseRGB = (rgbStr: string) => {
-  const match = rgbStr.match(/rgb\((\d+),\s*(\d+),\s*(\d+)\)/);
-  if (!match) return { r: 220, g: 245, b: 220 }; // 解析失败用默认浅绿
-  return {
-    r: Number(match[1]),
-    g: Number(match[2]),
-    b: Number(match[3])
-  };
-};
-
-// 🔥 3. 响应式解析起始/结束颜色（依赖mapConfig）
-const startColor = computed(() => parseRGB(props.mapConfig.startRGB));
-const endColor = computed(() => parseRGB(props.mapConfig.endRGB));
 
 // 🔥 4. 计算属性：获取当前NDVI范围（从mapConfig取，替代固定值）
 const ndviMin = computed(() => props.mapConfig.ndviMin);
@@ -56,8 +38,8 @@ const gammaVal = computed(() => props.mapConfig.gammaVal);
 
 // 修正：处理props可能为undefined的情况，避免报错
 const ndvidatamap = computed(() => {
-  if (!props.ndvidata) return {};
-  return props.ndvidata.reduce((acc: Record<string, number[]>, item) => {
+  if (!ndviData) return {};
+  return ndviData.reduce((acc: Record<string, number[]>, item) => {
     acc[item.district] = item.data;
     return acc;
   }, {});
@@ -69,69 +51,46 @@ const ndvidatamap = computed(() => {
  * 1. Gamma校正 → 2. 钳位NDVI → 3. 归一化 → 4. 插值计算RGB
  */
 const getNdviColor = computed(() => {
-  return (ndvi: number) => {
-    // Step1: Gamma校正（调整对比度）
-    const correctedNdvi = Math.pow(Math.max(0, ndvi), gammaVal.value);
-    
-    // Step2: 钳位NDVI到配置的范围
-    const clampedNdvi = Math.max(ndviMin.value, Math.min(ndviMax.value, correctedNdvi));
-    
-    // Step3: 归一化到[0,1]
-    const normalized = (clampedNdvi - ndviMin.value) / (ndviMax.value - ndviMin.value) || 0; // 避免除以0
-    
-    // Step4: 插值计算RGB（从起始色到结束色）
-    const r = Math.round(startColor.value.r * (1 - normalized) + endColor.value.r * normalized);
-    const g = Math.round(startColor.value.g * (1 - normalized) + endColor.value.g * normalized);
-    const b = Math.round(startColor.value.b * (1 - normalized) + endColor.value.b * normalized);
-    
-    return `rgb(${r},${g},${b})`;
-  };
+ return (index: number) => getIndexColor(index, {
+    max: ndviMax.value,
+    min: ndviMin.value,
+    gamma: gammaVal.value,
+    platte: [props.mapConfig.startRGB, props.mapConfig.endRGB],
+  });
 });
 
 /**
  * 安全获取NDVI值：处理区县不存在/索引越界的情况
  */
-const getNdviVal = (county_name: string, year: number = props.yearindex) => {
-    if (!ndvidatamap.value) return (ndviMin.value + ndviMax.value) / 2;
+const getNdviVal = (county_name: string, year: number = yearIndex.value) => {
+  if (!ndvidatamap.value) {
+    console.warn(`未找到${county_name}的geojson`);
+    return 0;}
   const data = ndvidatamap.value[county_name];
   if (!data || year < 0 || year >= data.length) {
-    console.warn(`未找到${county_name}的NDVI数据，使用默认值`);
-    return (ndviMin.value + ndviMax.value) / 2;
+    console.warn(`未找到${county_name}的NDVI数据，使用默认值0`);
+    return 0;
   }
   return data[year];
 };
 
 // 基础样式（图层类型暂用fill，可扩展tiff逻辑）
-const city_style = computed(() => ({
+const city_bounds_style = {
   color: 'rgb(0, 200, 0)', // 城市边框深绿
   weight: 5,
   opacity: 1,
-  fillOpacity: fillOpacity.value, // 从配置取不透明度
-}));
+  fillOpacity: 0, // 从配置取不透明度
+};
 
-const county_style = computed(() => ({
+const county_bounds_style = {
   color: '#000000', // 区县边框深灰
   dashArray: '3,5',
   weight: 2,
   opacity: 1,
   fillColor: '#FFFFFF',
   fillOpacity: 0
-}));
-
-const getGeojsonLayer = async (style: any, geojson_path: string = '开封市.geojson') => {
-  return fetch(geojson_path)
-    .then(response => {
-      if (!response.ok) throw new Error(`请求失败: ${response.status}`);
-      return response.json();
-    })
-    .then(geojsonData => {
-      return L.geoJSON(geojsonData, { style });
-    })
-    .catch(error => {
-      console.error('加载GeoJSON失败：', error);
-      throw error;
-    });
 };
+
 
 // 🔥 6. 优化交互逻辑（根据showLabel控制弹窗显示）
 function onEachFeature(layer: any) {
@@ -160,7 +119,7 @@ function onEachFeature(layer: any) {
     layer.on('mouseout', function(this: any) {
       const domEl = this.getElement();
       if (domEl) {
-        this.setStyle(county_style.value);
+        this.setStyle(county_bounds_style);
         domEl.style.transform = 'scale(1)';
         domEl.style.boxShadow = 'none';
         domEl.style.zIndex = '1';
@@ -175,51 +134,49 @@ function onEachFeature(layer: any) {
   }
 }
 
-
-
 // 🔥 7. 保存地图和图层实例（用于后续更新）
 const viewcenter = ref<[number, number]>([34.55, 114.7]); // 开封市中心经纬度
 const mapInstance = ref<L.Map | null>(null);
 const cityLayerInstance = ref<L.GeoJSON | null>(null);
 const countyLayerInstance = ref<L.GeoJSON | null>(null);
 // 2. 标注相关响应式变量（对应原生全局变量）
-const districtLabels = ref<L.LayerGroup | null>(null); // 存储标注图层组
-const isLabelsAdded = ref<boolean>(false); // 标记是否已添加到地图
+const districtLabels = ref<L.LayerGroup>(L.layerGroup()); // 存储标注图层组
 
-// 复刻原生 updateDistrictLabels 逻辑（适配 Vue）
-const updateDistrictLabels = () => {
-    console.log(props.mapConfig.showLabel)
-    if (!mapInstance.value) {
+
+// 逻辑，如果showlabel为false,添加标注图层组到地图，再清空标注图层组
+// 如果showLabel为true,添加标注图层组到地图，添加标注到图层组
+const updateDistrictLabels = async (
+  mapInstance: L.Map | null,
+  layerGroup: L.LayerGroup,
+  showLabel: boolean,
+) => {
+    // 1. 检查地图实例是否存在
+    if (!mapInstance) {
     console.warn('地图实例未初始化，跳过标注更新');
     return;
-  }
-  if (!districtLabels.value) {
-    districtLabels.value = L.layerGroup(); // 初始化标注图层组
-  }
-
-  // 1. 开关关闭：清空标注 + 移除图层组
-  if (!props.mapConfig.showLabel) {
-    districtLabels.value.clearLayers();
-    if (isLabelsAdded.value) {
-      mapInstance.value!.removeLayer(districtLabels.value as L.LayerGroup);
-      isLabelsAdded.value = false;
     }
-    return;
-  }
+    // 2. 检查图层组是否存在，如果不存在应该直接报错，而不是反复创建新的图层组
+    if (!layerGroup) {
+      throw new Error('图层组不存在，无法更新标注');
+    }
+    // 3. 检查地图是否已添加图层组，默认是没有加上去的,加上去之后不会被重复添加和移除
+    if (!mapInstance.hasLayer(layerGroup)) {
+      mapInstance.addLayer(layerGroup);
+      console.log('地图已添加标注图层组，所以按道理不刷新这条消息只会出现一次')
+    }
+    // 3. 在标注开关关闭时，清空标注 + 移除图层组,也就是当showLabel为true时，不执行这一步
+    if (showLabel == false) {
+      layerGroup.clearLayers();
+      // 兜底移除图层组，确保不会重复添加
+      return;
+    }
 
-  // 2. 开关打开：确保图层组挂载到地图
-  if (!isLabelsAdded.value) {
-    districtLabels.value!.addTo(mapInstance.value! as L.Map);
-    isLabelsAdded.value = true;
-  }
-
-  // 3. 清空旧标注，重新生成
-  districtLabels.value!.clearLayers();
-  const yearIndex = props.yearindex;
-  const targetDistricts = Object.keys(props.boundsDict); // 如需支持单区县选中，可后续扩展
-
+  // 首先不管有没有开关，都清空旧标注
+  layerGroup.clearLayers();
+  const targetDistricts = Object.keys(boundsDict); // 如需支持单区县选中，可后续扩展
+   
   targetDistricts.forEach(district => {
-    const districtInfo = props.boundsDict[district]!;
+    const districtInfo = boundsDict[district]!;
     const [minLat, minLng] = districtInfo[0];
     const [maxLat, maxLng] = districtInfo[1];
     if (!minLat || !maxLat || !minLng || !maxLng) {
@@ -231,36 +188,27 @@ const updateDistrictLabels = () => {
     const center = [centerLat, centerLng];
 
     // 获取当前年份的 NDVI 值
-    const ndviItem = props.ndvidata.find(item => item.district === district);
-    const ndviValue = ndviItem?.data[yearIndex] || 0;
+    const ndviItem = ndviData.find(item => item.district === district);
+    const ndviValue = ndviItem?.data[yearIndex.value] || 0;
 
     // 复刻原生标注 HTML 样式
     const labelHtml = `
       <div class="glass-dark px-3 py-2 rounded-lg text-sm text-center shadow-lg border border-primary/20 
                   bg-opacity-90 backdrop-blur-sm z-50">
         <div class="font-bold text-primary">${district}</div>
-        <div class="text-xs text-white/90">NDVI: ${ndviValue.toFixed(4)}</div>
+        <div class="text-xs text-white/90">NDVI: ${ndviValue? ndviValue.toFixed(4) : 'NaN'}</div>
       </div>
     `;
 
     // 创建自定义 div 标记
-    const labelIcon = L.divIcon({
-      html: labelHtml,
-      className: 'district-label',
-      iconSize: [100, 50],
-      iconAnchor: [50, 25]
-    });
-
-    // 添加标记到图层组（挂载到 vectorPane 确保置顶）
-    
-    L.marker(center as L.LatLngExpression, {
-      icon: labelIcon,
-      zIndexOffset: 1000
-    }).addTo(districtLabels.value! as L.LayerGroup);
+   
+    getHTMLMarker(center as L.LatLngExpression,labelHtml).addTo(layerGroup);
   });
 };
 
+
 onMounted(async () => {
+
   // 初始化地图
   const map = L.map('map', {
     zoomControl: false,
@@ -270,9 +218,8 @@ onMounted(async () => {
   mapInstance.value = map;
 
   // 加载图层
-  districtLabels.value = L.layerGroup();
-  const city_layer = await getGeojsonLayer(city_style.value);
-  const county_layer = await getGeojsonLayer(county_style.value);
+  const city_layer = await getGeojsonLayer('开封市.geojson',city_bounds_style);
+  const county_layer = await getGeojsonLayer('开封市.geojson',county_bounds_style);
   cityLayerInstance.value = city_layer;
   countyLayerInstance.value = county_layer;
   
@@ -284,27 +231,10 @@ onMounted(async () => {
     onEachFeature(layer);
   });
 
-
-    const normalm = L.tileLayer.chinaProvider('GaoDe.Normal.Map', {
-    maxZoom: 18,
-    minZoom: 5
-});
-  const imgm = L.tileLayer.chinaProvider('GaoDe.Satellite.Map', {
-    maxZoom: 18,
-    minZoom: 5
-});
-  const imga = L.tileLayer.chinaProvider('GaoDe.Satellite.Annotion', {
-    maxZoom: 18,
-    minZoom: 5
-});
-
-
-    L.control.layers({
-        "地图": normalm,
-        "影像": imgm
-    },{
-        "标注": imga
-    }).addTo(map);
+  // 添加高德地图图层
+  getGaoDeMapLayer().addTo(map);
+  
+  
   // 添加图层到地图
   city_layer.addTo(map);
   county_layer.addTo(map);
@@ -315,7 +245,8 @@ onMounted(async () => {
 const updateCityLayerStyle = () => {
     if (props.mapConfig.layerType === 'fill'){ 
     if (!mapInstance.value) return;
-    updateDistrictLabels();
+    
+    updateDistrictLabels(mapInstance.value as L.Map,districtLabels.value as L.LayerGroup,props.mapConfig.showLabel );
     if (!cityLayerInstance.value) return;
     cityLayerInstance.value.eachLayer((layer: any) => {
         const name = layer.feature?.properties?.name;
@@ -331,7 +262,7 @@ const updateCityLayerStyle = () => {
 
 // 🔥 9. 监听参数变化，实时更新
 // 监听yearindex变化
-watch(() => props.yearindex, () => {
+watch(() => yearIndex.value, () => {
   updateCityLayerStyle();
 }, { immediate: true });
 
@@ -349,21 +280,14 @@ watch(() => props.mapConfig, () => {
 watch(() => props.resetTrigger, () => {
     mapInstance.value!.setView(viewcenter.value, 9);
 })
+
+
 </script>
 
 <style scoped>
 #map {
-  height: 100vh;
+  height: 100%;
   width: 100%;
 }
 
-/* 修复leaflet样式穿透问题 */
-:deep(.leaflet-popup-content) {
-  color: #333;
-  font-size: 14px;
-}
-
-:deep(.leaflet-popup-tip) {
-  background-color: #fff;
-}
 </style>

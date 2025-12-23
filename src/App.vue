@@ -1,22 +1,29 @@
 <script setup lang="ts">
-import { onMounted, ref, watch, reactive, nextTick } from 'vue'
+import { onMounted, ref, watch, reactive, nextTick, provide } from 'vue'
 import Nav from './components/nav.vue'
 import Map from './components/map.vue'
 import TimeBar from './components/timeBar.vue'
 import SettingPanel from './components/settingPanel.vue'
 import DataPanel from './components/dataPanel.vue'
 
-type DistrictBounds = [[number, number], [number, number]];
+
 
 // 1. 基础响应式数据
 
-const ispanelOpen = ref<boolean>(false)
-const selectedDistrict = ref<string>('')
-const resetTrigger = ref<boolean>(false)
-
-
-const yearIndex = ref<number>(0)
+const ispanelOpen = ref<boolean>(false)   // 数据面板是否打开
 const isshowsetting = ref<boolean>(false)
+
+const selectedDistrict = ref<string>('')
+const yearIndex = ref<number>(0)
+const startYear = ref<number>(2000)
+const yearRange = ref<number>(11)
+
+provide('startYear', startYear)
+provide('yearIndex', yearIndex)
+provide('selectedDistrict', selectedDistrict)
+provide('yearRange', yearRange)
+
+const resetTrigger = ref<boolean>(false)
 const settingpanel = ref<InstanceType<typeof SettingPanel> | null>(null)
 
 const reset = () => {
@@ -24,7 +31,7 @@ const reset = () => {
   resetTrigger.value = !resetTrigger.value
   selectedDistrict.value = ''
   // yearIndex.value = 0 // 可选：重置年份到初始值
-  // ispanelOpen.value = false // 可选：关闭数据面板
+  ispanelOpen.value = false // 可选：关闭数据面板
   console.log('执行重置：恢复全局视图 + 重置缩放')
 
 }
@@ -133,30 +140,7 @@ onMounted(() => {
   console.log('App初始化完成，默认配置：', mapConfig)
 })
 
-// 死数据
-const ndviData = [
-  { district: "兰考县", data: [0.2924, 0.3188, 0.2215, 0.2420, 0.2594, 0.3234, 0.2656, 0.2432, 0.3249, 0.2437, 0.2580] },
-  { district: "尉氏县", data: [0.2507, 0.3065, 0.2366, 0.2349, 0.3068, 0.2603, 0.2597, 0.2501, 0.3519, 0.2607, 0.3277] },
-  { district: "杞县", data: [0.3351, 0.3237, 0.2362, 0.2320, 0.2597, 0.3616, 0.2609, 0.2435, 0.3391, 0.2657, 0.2611] },
-  { district: "祥符区", data: [0.2656, 0.2950, 0.2330, 0.2434, 0.2715, 0.2819, 0.2496, 0.2362, 0.3157, 0.2466, 0.2666] },
-  { district: "禹王台区", data: [0.2357, 0.2508, 0.2290, 0.2386, 0.2583, 0.2421, 0.2377, 0.2240, 0.2531, 0.2175, 0.2466] },
-  { district: "通许县", data: [0.3230, 0.3215, 0.2359, 0.2318, 0.2701, 0.3554, 0.2599, 0.2588, 0.3429, 0.2676, 0.2813] },
-  { district: "顺河回族区", data: [0.2370, 0.2641, 0.2245, 0.2364, 0.2498, 0.2424, 0.2402, 0.2294, 0.2950, 0.2286, 0.2547] },
-  { district: "鼓楼区", data: [0.2183, 0.2356, 0.2154, 0.2223, 0.2466, 0.2265, 0.2142, 0.2162, 0.2382, 0.2137, 0.2364] },
-  { district: "龙亭区", data: [0.2213, 0.2409, 0.2195, 0.2231, 0.2478, 0.2327, 0.2331, 0.2266, 0.2571, 0.2201, 0.2436] }
-];
 
-const boundsDict: Record<string, DistrictBounds> = {
-    '兰考县': [[34.744958, 114.686933], [35.025608, 115.261211]],
-    '尉氏县': [[34.195708, 113.871252], [34.618826, 114.437401]],
-    '杞县': [[34.224362, 114.603486], [34.763910, 114.931119]],
-    '祥符区': [[34.509519, 114.140056], [34.923018, 114.728261]],
-    '禹王台区': [[34.701852, 114.316386], [34.785142, 114.443284]],
-    '通许县': [[34.261085, 114.303372], [34.592257, 114.645476]],
-    '顺河回族区': [[34.758807, 114.349912], [34.857390, 114.500633]],
-    '鼓楼区': [[34.678461, 114.245458], [34.801400, 114.363040]],
-    '龙亭区': [[34.702504, 114.111291], [34.940690, 114.428343]]
-};
 </script>
 
 <template>
@@ -170,9 +154,6 @@ const boundsDict: Record<string, DistrictBounds> = {
     <!-- 核心：传递响应式的mapConfig -->
     
     <Map 
-      :ndvidata="ndviData"
-      :boundsDict="boundsDict"
-      :yearindex="yearIndex"
       :mapConfig="mapConfig"
       :resetTrigger="resetTrigger"
       @selectDistrict="(e:string)=>{
@@ -181,13 +162,10 @@ const boundsDict: Record<string, DistrictBounds> = {
     }"
     />
     <DataPanel
-      :selectedDistrict="selectedDistrict"
-      :ndviData="ndviData"
-      :currentYear="yearIndex + 2000"
       :panelOpen="ispanelOpen"
       @closePanel="ispanelOpen = false"
     />
-    <TimeBar @change="(e)=>{yearIndex = e}"/>
+    <TimeBar/>
     <SettingPanel 
       ref="settingpanel"
       @close="isshowsetting = false"
